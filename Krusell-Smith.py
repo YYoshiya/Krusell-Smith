@@ -22,7 +22,7 @@ class KSSolution:
         self.B = B
         self.R2 = R2
 
-def KSSolution_initializer(ksp, filename="result.h5"):
+def KSSolution_initializer(ksp):
     # Initialize k_opt
     k_opt = ksp['beta'] * np.repeat(ksp['k_grid'][:, np.newaxis, np.newaxis], 
                                     repeats=[ksp['K_size'], ksp['s_size']], axis=1)
@@ -116,43 +116,114 @@ def create_transition_matrix(ug, ub, zg_ave_dur, zb_ave_dur, ug_ave_dur, ub_ave_
     transmat = TransitionMatrix(P, Pz, Peps_gg, Peps_bb, Peps_gb, Peps_bg)
     return transmat
 
+class KSParameter:
+    def __init__(self, beta=0.99, alpha=0.36, delta=0.025, theta=1,
+                 k_min=0, k_max=1000, k_size=100, K_min=30, K_max=50, K_size=4,
+                 z_min=0.99, z_max=1.01, z_size=2, eps_min=0.0, eps_max=1.0, eps_size=2,
+                 ug=0.04, ub=0.1, zg_ave_dur=8, zb_ave_dur=8,
+                 ug_ave_dur=1.5, ub_ave_dur=2.5, puu_rel_gb2bb=1.25, puu_rel_bg2gg=0.75,
+                 mu=0, degree=7):
+        
+        # Utility function choice
+        if theta == 1:
+            self.u = self.LogUtility()
+        else:
+            self.u = self.CRRAUtility(theta)
+        
+        # Labor supply
+        self.l_bar = 1 / (1 - ub)
+        
+        # Individual capital grid
+        k_grid = (np.linspace(0, k_size - 1, k_size) / (k_size - 1))**degree * (k_max - k_min) + k_min
+        k_grid[0], k_grid[-1] = k_min, k_max  # adjust numerical error
+        self.k_grid = k_grid
+        
+        # Aggregate capital grid
+        self.K_grid = np.linspace(K_min, K_max, K_size)
+        
+        # Aggregate technology shock
+        self.z_grid = np.linspace(z_max, z_min, z_size)
+        
+        # Idiosyncratic employment shock grid
+        self.eps_grid = np.linspace(eps_max, eps_min, eps_size)
+        
+        # Shock grid (s_grid)
+        self.s_grid = self.gridmake(self.z_grid, self.eps_grid)
+        
+        # Transition matrices
+        self.transmat = self.create_transition_matrix(ug, ub, zg_ave_dur, zb_ave_dur, 
+                                                      ug_ave_dur, ub_ave_dur, puu_rel_gb2bb, puu_rel_bg2gg)
+        
+        # Other parameters
+        self.beta = beta
+        self.alpha = alpha
+        self.delta = delta
+        self.theta = theta
+        self.k_min = k_min
+        self.k_max = k_max
+        self.K_min = K_min
+        self.K_max = K_max
+        self.k_size = k_size
+        self.K_size = K_size
+        self.z_size = z_size
+        self.eps_size = eps_size
+        self.s_size = z_size * eps_size
+        self.ug = ug
+        self.ub = ub
+        self.mu = mu
+    
+    class LogUtility:
+        def __call__(self, x):
+            return np.log(x)
+
+    class CRRAUtility:
+        def __init__(self, theta):
+            self.theta = theta
+        
+        def __call__(self, x):
+            return (x**(1 - self.theta)) / (1 - self.theta)
+
+    def gridmake(self, *grids):
+        mesh = np.meshgrid(*grids, indexing='ij')
+        return np.vstack(map(np.ravel, mesh)).T
+
 # wage function
 def w(z, K, L):
-    return (1-alpha)*z*K**(alpha)*L**(-alpha)
+    return (1-ksp.alpha)*z*K**(ksp.alpha)*L**(-ksp.alpha)
 
 # interest rate function
 def r(z, K, L):
-    return alpha*z*K**(alpha-1)*L**(1-alpha)
+    return ksp.alpha*z*K**(ksp.alpha-1)*L**(1-ksp.alpha)
 
 
 # utility function 
 def utility(x): 
-    if sigma==1:
+    if ksp.sigma==1:
         return  np.log(x) 
     else:
-        return x**(1-sigma) / (1-sigma)
+        return x**(1-ksp.sigma) / (1-ksp.sigma)
     
-def rhs_bellman():
-    z, eps = s_grid[s_i, 0], s_grid[s_i, 2]
+def rhs_bellman(kp,value,k,K,s_i):
+    z, eps = ksp.s_grid[s_i, 0], ksp.s_grid[s_i, 2]
     Kp, L = compute_Kp_L()
-    c = (r(alpha,z,K,L)+1-delta)*k+w(alpha,z,K,L)*(eps*l_bar+(1.0-eps)*mu)-kp 
+    c = (r(ksp.alpha,z,K,L)+1-ksp.delta)*k+w(ksp.alpha,z,K,L)*(eps*ksp.l_bar+(1.0-eps)*ksp.mu)-kp 
     expec = compute_expectation(kp,Kp,value,s_i,ksp)
-    return u(c)+beta*expec
+    return ksp.u(c)+ksp.beta*expec
 
 def compute_expectation(kp, Kp, value, s_i):
     expec = 0
     for s_n_i in range(4):
-        value_itp = interpolate.interp1d(k, value[:,:,s_n_i], kind='linear')
-        expec += transmat.P[s_i, s_n_i] * value_itp(kp, Kp)
+        value_itp = interpolate.interp1d(ksp.k_grid, ksp.K_grid, value[:,:,s_n_i], kind='linear')
+        expec += transmat.P[s_i, s_n_i] * value_itp(kp, Kp)  #ここおかしい気がする。
     return expec
 
 def maximize_rhs(k_i, K_i, s_i):
     k_min, k_max = ksp.k_grid[0], ksp.k_grid[-1]
     k=ksp.k_grid[k_i]
     K=ksp.K_grid[K_i]
-    z, eps = s_grid[s_i, 0], s_grid[s_i, 1]
+    z, eps = ksp.s_grid[s_i, 0], ksp.s_grid[s_i, 1]
     Kp, L = compute_Kp_L(K,s_i)
-    k_c_pos = (r(z,K,L)+1-delta)*k+w(z,K,L)*(eps*l_bar+(1.0-eps)*mu)
+    k_c_pos = (r(z,K,L)+1-ksp.delta)*k+w(z,K,L)*(eps*ksp.l_bar+(1.0-eps)*ksp.mu)
     obj = -rhs_bellman(kp, k, K, s_i)
     res = minimize_scalar(obj, bounds=(k_min, min(k_c_pos, k_max)), method='bounded')
     
@@ -162,7 +233,7 @@ def maximize_rhs(k_i, K_i, s_i):
 
 
 
-def solve_ump():
+def solve_ump(tol=1e-8, max_iter=100):
     counter_VFI = 0
     while True:
         counter_VFI += 1
@@ -173,7 +244,7 @@ def solve_ump():
                     maximize_rhs(k_i, K_i, s_i, ksp, kss)
         iterate_policy()
         dif = maximum(abs, value_old - kss.value)
-        if dif < tol:
+        if dif < tol or counter_VFI == max_iter:
             break
 
 
@@ -303,7 +374,7 @@ def regress_ALM(ksp, kss, zi_shocks, K_ts, T_discard=100):
     
     return B_n, dif_B
 
-def find_ALM_coef(umpsm, sm, ksp, kss, zi_shocks, tol_ump=1e-8, max_iter_ump=100,
+def find_ALM_coef(zi_shocks, tol_ump=1e-8, max_iter_ump=100,
                   tol_B=1e-8, max_iter_B=20, update_B=0.3, T_discard=100):
     
     K_ts = np.empty(len(zi_shocks))
@@ -338,3 +409,14 @@ def find_ALM_coef(umpsm, sm, ksp, kss, zi_shocks, tol_ump=1e-8, max_iter_ump=100
         kss.B = update_B * B_n + (1 - update_B) * kss.B
     
     return K_ts
+
+transmat = create_transition_matrix(ug=0.04, ub=0.1, zg_ave_dur=8, zb_ave_dur=8, ug_ave_dur=1.5, ub_ave_dur=2.5, puu_rel_gb2bb=1.25, puu_rel_bg2gg=0.75)
+ksp = KSParameter()
+kss = KSSolution(ksp)
+zi_shocks, epsi_shocks = generate_shocks(z_shock_size=1100, population=10000)
+sm = Stochastic(epsi_shocks, k_population=np.ones(10000))
+T_discard = 100
+K_ts = find_ALM_coef(zi_shocks, 
+            tol_ump = 1e-8, max_iter_ump = 10000,
+            tol_B = 1e-8, max_iter_B = 500, update_B = 0.3,
+            T_discard = T_discard)
