@@ -1,13 +1,13 @@
 import numpy as np
 from scipy.linalg import inv
 from scipy import interpolate
+from scipy.optimize import minimize_scalar
 import time
 import matplotlib.pyplot as plt
 import math
 import statsmodels.api as sm
 from statsmodels.iolib.summary2 import summary_col
-from scipy.interpolate import RegularGridInterpolatorppp
-import time 
+from scipy.interpolate import RegularGridInterpolator
 import multiprocessing as multi
 from dataclasses import dataclass, field
 import quantecon as qe
@@ -22,18 +22,17 @@ class KSSolution:
 
 def KSSolution_initializer(ksp):
     # Initialize k_opt
-    k_opt = ksp['beta'] * np.repeat(ksp['k_grid'][:, np.newaxis, np.newaxis], 
-                                    repeats=[ksp['K_size'], ksp['s_size']], axis=1)
-    k_opt = 0.9 * np.repeat(ksp['k_grid'][:, np.newaxis, np.newaxis], 
-                            repeats=[ksp['K_size'], ksp['s_size']], axis=1)
-    k_opt = np.clip(k_opt, ksp['k_min'], ksp['k_max'])
+    k_opt = ksp.beta * np.repeat(ksp.k_grid[:, np.newaxis, np.newaxis], 
+                             repeats=[ksp.K_size, ksp.s_size], axis=1)
+    k_opt = 0.9 * np.repeat(ksp.k_grid[:, np.newaxis, np.newaxis], 
+                            repeats=[ksp.K_size, ksp.s_size], axis=1)
+    k_opt = np.clip(k_opt, ksp.k_min, ksp.k_max)
 
     # Initialize value function
-    value = ksp['u'](0.1 / 0.9 * k_opt) / (1 - ksp['beta'])
-
+    value = ksp.u(0.1 / 0.9 * k_opt) / (1 - ksp.beta)
     # Initialize B
     B = np.array([0.0, 1.0, 0.0, 1.0])
-    
+
     kss = KSSolution(k_opt, value, B, [0.0, 0.0])
     return kss
 @dataclass
@@ -201,6 +200,18 @@ def utility(x):
     else:
         return x**(1-ksp.sigma) / (1-ksp.sigma)
     
+def compute_Kp_L(K, s_i, B):
+    if s_i % ksp.eps_size == 1:
+        Kp = np.exp(B[0] + B[1] * np.log(K))
+        L = ksp.lbar * (1-ksp.ub)
+    else:
+        Kp = np.exp(B[2] + B[3] * np.log(K))
+        L = ksp.lbar * (1-ksp.ug)
+    Kp = np.clip(Kp, ksp.K_min, ksp.K_max)
+    return Kp, L
+
+
+
 def rhs_bellman(kp,value,k,K,s_i):
     z, eps = ksp.s_grid[s_i, 0], ksp.s_grid[s_i, 2]
     Kp, L = compute_Kp_L()
@@ -222,7 +233,8 @@ def maximize_rhs(k_i, K_i, s_i):
     z, eps = ksp.s_grid[s_i, 0], ksp.s_grid[s_i, 1]
     Kp, L = compute_Kp_L(K,s_i)
     k_c_pos = (r(z,K,L)+1-ksp.delta)*k+w(z,K,L)*(eps*ksp.l_bar+(1.0-eps)*ksp.mu)
-    obj = -rhs_bellman(kp, k, K, s_i)
+    def obj(kp):
+        return -rhs_bellman(kp, kss.value, k, K, s_i, ksp)
     res = minimize_scalar(obj, bounds=(k_min, min(k_c_pos, k_max)), method='bounded')
     
     # 最適化結果の取得
@@ -236,14 +248,33 @@ def solve_ump(tol=1e-8, max_iter=100):
     while True:
         counter_VFI += 1
         value_old = np.copy(kss.value)
-        for k_i in range(ksp['k_size']):
-            for K_i in range(ksp['K_size']):
-                for s_i in range(ksp['s_size']):
-                    maximize_rhs(k_i, K_i, s_i, ksp, kss)
-        iterate_policy()
-        dif = maximum(abs, value_old - kss.value)
+        for k_i in range(ksp.k_size):
+            for K_i in range(ksp.K_size):
+                for s_i in range(ksp.s_size):
+                    maximize_rhs(k_i, K_i, s_i)
+        iterate_policy(ksp, kss, n_iter=20)
+        dif = np.abs(value_old - kss.value)
         if dif < tol or counter_VFI == max_iter:
             break
+
+import numpy as np
+
+def iterate_policy(ksp, kss, n_iter=20):
+    value = np.copy(kss.value)
+    
+    for _ in range(n_iter):
+        # update value using policy
+        value = np.array([
+            rhs_bellman(kss.k_opt[k_i, K_i, s_i], kss.value,
+                        ksp.k_grid[k_i], ksp.K_grid[K_i], s_i)
+            for k_i in range(ksp.k_size)
+            for K_i in range(ksp.K_size)
+            for s_i in range(ksp.s_size)
+        ]).reshape(ksp.k_size, ksp.K_size, ksp.s_size)
+        
+        kss.value = np.copy(value)
+    
+    return None
 
 
 def generate_shocks(z_shock_size, population):
@@ -383,7 +414,7 @@ def find_ALM_coef(zi_shocks, tol_ump=1e-8, max_iter_ump=100,
         print(f" --- Iteration over ALM coefficient: {counter_B} ---")
         
         # Solve individual problem
-        solve_ump(umpsm, ksp, kss, max_iter=max_iter_ump, tol=tol_ump)
+        solve_ump(max_iter=max_iter_ump, tol=tol_ump)
         
         # Compute aggregate path of capital
         simulate_aggregate_path(ksp, kss, zi_shocks, K_ts, sm)
@@ -418,4 +449,3 @@ K_ts = find_ALM_coef(zi_shocks,
             tol_ump = 1e-8, max_iter_ump = 10000,
             tol_B = 1e-8, max_iter_B = 500, update_B = 0.3,
             T_discard = T_discard)
-#お試し
