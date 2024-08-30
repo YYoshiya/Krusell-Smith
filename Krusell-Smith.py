@@ -6,15 +6,13 @@ import matplotlib.pyplot as plt
 import math
 import statsmodels.api as sm
 from statsmodels.iolib.summary2 import summary_col
-from scipy.interpolate import RegularGridInterpolator
+from scipy.interpolate import RegularGridInterpolatorppp
 import time 
 import multiprocessing as multi
 from dataclasses import dataclass, field
 import quantecon as qe
 from quantecon import MarkovChain
 from tqdm import tqdm  # For progress bar
-import statsmodels.api as sm
-
 class KSSolution:
     def __init__(self, k_opt, value, B, R2):
         self.k_opt = k_opt
@@ -420,3 +418,4 @@ K_ts = find_ALM_coef(zi_shocks,
             tol_ump = 1e-8, max_iter_ump = 10000,
             tol_B = 1e-8, max_iter_B = 500, update_B = 0.3,
             T_discard = T_discard)
+#お試し
