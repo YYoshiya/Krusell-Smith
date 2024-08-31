@@ -8,11 +8,13 @@ import math
 import statsmodels.api as sm
 from statsmodels.iolib.summary2 import summary_col
 from scipy.interpolate import RegularGridInterpolator
+from scipy.interpolate import RectBivariateSpline
 import multiprocessing as multi
 from dataclasses import dataclass, field
 import quantecon as qe
 from quantecon import MarkovChain
 from tqdm import tqdm  # For progress bar
+import itertools
 class KSSolution:
     def __init__(self, k_opt, value, B, R2):
         self.k_opt = k_opt
@@ -22,17 +24,19 @@ class KSSolution:
 
 def KSSolution_initializer(ksp):
     # Initialize k_opt
-    k_opt = ksp.beta * np.repeat(ksp.k_grid[:, np.newaxis, np.newaxis], 
-                             repeats=[ksp.K_size, ksp.s_size], axis=1)
-    k_opt = 0.9 * np.repeat(ksp.k_grid[:, np.newaxis, np.newaxis], 
-                            repeats=[ksp.K_size, ksp.s_size], axis=1)
+    k_opt = ksp.beta * np.tile(ksp.k_grid[:, np.newaxis, np.newaxis], 
+                               (1, ksp.K_size, ksp.s_size))
+    k_opt = 0.9 * np.tile(ksp.k_grid[:, np.newaxis, np.newaxis], 
+                          (1, ksp.K_size, ksp.s_size))
     k_opt = np.clip(k_opt, ksp.k_min, ksp.k_max)
 
     # Initialize value function
     value = ksp.u(0.1 / 0.9 * k_opt) / (1 - ksp.beta)
+    
     # Initialize B
     B = np.array([0.0, 1.0, 0.0, 1.0])
 
+    # Create KSSolution instance
     kss = KSSolution(k_opt, value, B, [0.0, 0.0])
     return kss
 @dataclass
@@ -145,10 +149,10 @@ class KSParameter:
         self.eps_grid = np.linspace(eps_max, eps_min, eps_size)
         
         # Shock grid (s_grid)
-        self.s_grid = self.gridmake(self.z_grid, self.eps_grid)
+        self.s_grid = np.array(list(itertools.product(self.z_grid, self.eps_grid)))
         
         # Transition matrices
-        self.transmat = self.create_transition_matrix(ug, ub, zg_ave_dur, zb_ave_dur, 
+        self.transmat = create_transition_matrix(ug, ub, zg_ave_dur, zb_ave_dur, 
                                                       ug_ave_dur, ub_ave_dur, puu_rel_gb2bb, puu_rel_bg2gg)
         
         # Other parameters
@@ -180,10 +184,6 @@ class KSParameter:
         def __call__(self, x):
             return (x**(1 - self.theta)) / (1 - self.theta)
 
-    def gridmake(self, *grids):
-        mesh = np.meshgrid(*grids, indexing='ij')
-        return np.vstack(map(np.ravel, mesh)).T
-
 # wage function
 def w(z, K, L):
     return (1-ksp.alpha)*z*K**(ksp.alpha)*L**(-ksp.alpha)
@@ -201,29 +201,30 @@ def utility(x):
         return x**(1-ksp.sigma) / (1-ksp.sigma)
     
 def compute_Kp_L(K, s_i, B):
-    if s_i % ksp.eps_size == 1:
+    if s_i % ksp.eps_size == 0:
         Kp = np.exp(B[0] + B[1] * np.log(K))
-        L = ksp.lbar * (1-ksp.ub)
+        L = ksp.l_bar * (1-ksp.ub)
     else:
         Kp = np.exp(B[2] + B[3] * np.log(K))
-        L = ksp.lbar * (1-ksp.ug)
+        L = ksp.l_bar * (1-ksp.ug)
     Kp = np.clip(Kp, ksp.K_min, ksp.K_max)
     return Kp, L
 
 
 
 def rhs_bellman(kp,value,k,K,s_i):
-    z, eps = ksp.s_grid[s_i, 0], ksp.s_grid[s_i, 2]
-    Kp, L = compute_Kp_L()
-    c = (r(ksp.alpha,z,K,L)+1-ksp.delta)*k+w(ksp.alpha,z,K,L)*(eps*ksp.l_bar+(1.0-eps)*ksp.mu)-kp 
-    expec = compute_expectation(kp,Kp,value,s_i,ksp)
+    z, eps = ksp.s_grid[s_i, 0], ksp.s_grid[s_i, 1]
+    Kp, L = compute_Kp_L(K,s_i, kss.B)
+    c = (r(z,K,L)+1-ksp.delta)*k+w(z,K,L)*(eps*ksp.l_bar+(1.0-eps)*ksp.mu)-kp 
+    expec = compute_expectation(kp,Kp,value,s_i)
     return ksp.u(c)+ksp.beta*expec
 
 def compute_expectation(kp, Kp, value, s_i):
     expec = 0
     for s_n_i in range(4):
-        value_itp = interpolate.interp1d(ksp.k_grid, ksp.K_grid, value[:,:,s_n_i], kind='linear')
-        expec += transmat.P[s_i, s_n_i] * value_itp(kp, Kp)  #ここおかしい気がする。
+        # `RectBivariateSpline`を使用
+        value_itp = RectBivariateSpline(ksp.k_grid, ksp.K_grid, value[:, :, s_n_i])
+        expec += ksp.transmat.P[s_i, s_n_i] * value_itp(kp, Kp)[0, 0]  
     return expec
 
 def maximize_rhs(k_i, K_i, s_i):
@@ -231,10 +232,10 @@ def maximize_rhs(k_i, K_i, s_i):
     k=ksp.k_grid[k_i]
     K=ksp.K_grid[K_i]
     z, eps = ksp.s_grid[s_i, 0], ksp.s_grid[s_i, 1]
-    Kp, L = compute_Kp_L(K,s_i)
+    Kp, L = compute_Kp_L(K,s_i,kss.B)
     k_c_pos = (r(z,K,L)+1-ksp.delta)*k+w(z,K,L)*(eps*ksp.l_bar+(1.0-eps)*ksp.mu)
     def obj(kp):
-        return -rhs_bellman(kp, kss.value, k, K, s_i, ksp)
+        return -rhs_bellman(kp, kss.value, k, K, s_i)
     res = minimize_scalar(obj, bounds=(k_min, min(k_c_pos, k_max)), method='bounded')
     
     # 最適化結果の取得
@@ -253,7 +254,7 @@ def solve_ump(tol=1e-8, max_iter=100):
                 for s_i in range(ksp.s_size):
                     maximize_rhs(k_i, K_i, s_i)
         iterate_policy(ksp, kss, n_iter=20)
-        dif = np.abs(value_old - kss.value)
+        dif = np.max(np.abs(value_old - kss.value))
         if dif < tol or counter_VFI == max_iter:
             break
 
@@ -278,24 +279,24 @@ def iterate_policy(ksp, kss, n_iter=20):
 
 
 def generate_shocks(z_shock_size, population):
-    mc = MarkovChain(transmat.Pz)
+    mc = MarkovChain(ksp.transmat.Pz)
     zi_shock = mc.simulate(ts_length=z_shock_size)
     # idiosyncratic shocks
     epsi_shock = np.empty((z_shock_size, population), dtype=int)
     rand_draw = np.random.rand(population)
-    if zi_shock[0] == 1:  # if good
+    if zi_shock[0] == 0:  # if good
         epsi_shock[0, :] = (rand_draw < ksp.ug).astype(int) + 1
-    elif zi_shock[0] == 2:  # if bad
+    elif zi_shock[0] == 1:  # if bad
         epsi_shock[0, :] = (rand_draw < ksp.ub).astype(int) + 1
     else:
         raise ValueError(f"the value of zi_shock[0] ({zi_shock[0]}) is strange")
     
     for t in range(1, z_shock_size):
-        draw_eps_shock_wrapper(zi_shock[t], zi_shock[t-1], epsi_shock[t, :], epsi_shock[t-1, :], transmat)
+        draw_eps_shock_wrapper(zi_shock[t], zi_shock[t-1], epsi_shock[t, :], epsi_shock[t-1, :], ksp.transmat)
 
     for t in range(z_shock_size):
         n_e = np.sum(epsi_shock[t, :] == 1)  # Count number of employed
-        empl_rate_ideal = 1.0 - ksp['ug'] if zi_shock[t] == 1 else 1.0 - ksp['ub']
+        empl_rate_ideal = 1.0 - ksp.ug if zi_shock[t] == 1 else 1.0 - ksp.ub
         gap = round(empl_rate_ideal * population) - n_e
         
         if gap > 0:
@@ -325,16 +326,19 @@ def draw_eps_shock(epsi_shocks, epsi_shock_before, Peps):
 
 # Wrapper function that selects the correct transition matrix
 def draw_eps_shock_wrapper(zi, zi_lag, epsi_shocks, epsi_shock_before, transmat):
-    if zi == 1 and zi_lag == 1:
-        Peps = transmat['Peps_gg']
-    elif zi == 1 and zi_lag == 2:
-        Peps = transmat['Peps_bg']
-    elif zi == 2 and zi_lag == 1:
-        Peps = transmat['Peps_gb']
-    elif zi == 2 and zi_lag == 2:
-        Peps = transmat['Peps_bb']
+    if zi == 0 and zi_lag == 0:
+        Peps = transmat.Peps_gg
+    elif zi == 0 and zi_lag == 1:
+        Peps = transmat.Peps_bg
+    elif zi == 1 and zi_lag == 0:
+        Peps = transmat.Peps_gb
+    elif zi == 1 and zi_lag == 1:
+        Peps = transmat.Peps_bb
     else:
         raise ValueError("Invalid zi or zi_lag value")
+    
+    # draw_eps_shock関数を呼び出し、値を引き渡す
+    draw_eps_shock(epsi_shocks, epsi_shock_before, Peps)
     
 class Stochastic:
     def __init__(self, epsi_shocks, k_population):
@@ -368,8 +372,8 @@ def epsi_zi_to_si(eps_i, z_i, z_size):
     return z_i + z_size * (eps_i - 1)
 
 def regress_ALM(ksp, kss, zi_shocks, K_ts, T_discard=100):
-    n_g = np.sum(zi_shocks[T_discard:-1] == 1)
-    n_b = np.sum(zi_shocks[T_discard:-1] == 2)
+    n_g = np.sum(zi_shocks[T_discard:-1] == 0)
+    n_b = np.sum(zi_shocks[T_discard:-1] == 1)
     B_n = np.empty(4)
     x_g = np.empty(n_g)
     y_g = np.empty(n_g)
@@ -379,7 +383,7 @@ def regress_ALM(ksp, kss, zi_shocks, K_ts, T_discard=100):
     i_g, i_b = 0, 0
     
     for t in range(T_discard, len(zi_shocks) - 1):
-        if zi_shocks[t] == 1:
+        if zi_shocks[t] == 0:
             x_g[i_g] = np.log(K_ts[t])
             y_g[i_g] = np.log(K_ts[t + 1])
             i_g += 1
@@ -439,9 +443,8 @@ def find_ALM_coef(zi_shocks, tol_ump=1e-8, max_iter_ump=100,
     
     return K_ts
 
-transmat = create_transition_matrix(ug=0.04, ub=0.1, zg_ave_dur=8, zb_ave_dur=8, ug_ave_dur=1.5, ub_ave_dur=2.5, puu_rel_gb2bb=1.25, puu_rel_bg2gg=0.75)
 ksp = KSParameter()
-kss = KSSolution(ksp)
+kss = KSSolution_initializer(ksp)
 zi_shocks, epsi_shocks = generate_shocks(z_shock_size=1100, population=10000)
 sm = Stochastic(epsi_shocks, k_population=np.ones(10000))
 T_discard = 100
