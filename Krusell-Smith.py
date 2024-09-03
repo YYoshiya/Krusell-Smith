@@ -119,7 +119,7 @@ def create_transition_matrix(ug, ub, zg_ave_dur, zb_ave_dur, ug_ave_dur, ub_ave_
 
 class KSParameter:
     def __init__(self, beta=0.99, alpha=0.36, delta=0.025, theta=1,
-                 k_min=0, k_max=1000, k_size=100, K_min=30, K_max=50, K_size=4,
+                 k_min=0.0001, k_max=1000, k_size=100, K_min=30, K_max=50, K_size=4,
                  z_min=0.99, z_max=1.01, z_size=2, eps_min=0.0, eps_max=1.0, eps_size=2,
                  ug=0.04, ub=0.1, zg_ave_dur=8, zb_ave_dur=8,
                  ug_ave_dur=1.5, ub_ave_dur=2.5, puu_rel_gb2bb=1.25, puu_rel_bg2gg=0.75,
@@ -173,9 +173,19 @@ class KSParameter:
         self.ub = ub
         self.mu = mu
     
+    import numpy as np
+
     class LogUtility:
         def __call__(self, x):
-            return np.log(x)
+            threshold = 1e-10
+            x = np.asarray(x)  # x が配列でない場合でも配列に変換
+            result = np.where(
+                x < threshold,
+                np.log(threshold) + 1e10 * (x - threshold),
+                np.log(x)
+            )
+            return result
+
 
     class CRRAUtility:
         def __init__(self, theta):
