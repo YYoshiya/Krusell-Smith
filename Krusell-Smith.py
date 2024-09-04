@@ -9,6 +9,7 @@ import statsmodels.api as sm
 from statsmodels.iolib.summary2 import summary_col
 from scipy.interpolate import RegularGridInterpolator
 from scipy.interpolate import RectBivariateSpline
+from scipy.interpolate import RegularGridInterpolator
 import multiprocessing as multi
 from dataclasses import dataclass, field
 import quantecon as qe
@@ -30,9 +31,14 @@ def KSSolution_initializer(ksp):
                           (1, ksp.K_size, ksp.s_size))
     k_opt = np.clip(k_opt, ksp.k_min, ksp.k_max)
 
+    print(k_opt.shape)
+
+    
     # Initialize value function
     value = ksp.u(0.1 / 0.9 * k_opt) / (1 - ksp.beta)
-    
+    print(value.shape)
+    print(f"value max: {np.max(value)}")
+    print(f"value min: {np.min(value)}")
     # Initialize B
     B = np.array([0.0, 1.0, 0.0, 1.0])
 
@@ -172,8 +178,6 @@ class KSParameter:
         self.ug = ug
         self.ub = ub
         self.mu = mu
-    
-    import numpy as np
 
     class LogUtility:
         def __call__(self, x):
@@ -202,21 +206,14 @@ def w(z, K, L):
 def r(z, K, L):
     return ksp.alpha*z*K**(ksp.alpha-1)*L**(1-ksp.alpha)
 
-
-# utility function 
-def utility(x): 
-    if ksp.sigma==1:
-        return  np.log(x) 
-    else:
-        return x**(1-ksp.sigma) / (1-ksp.sigma)
     
 def compute_Kp_L(K, s_i, B):
     if s_i % ksp.eps_size == 0:
         Kp = np.exp(B[0] + B[1] * np.log(K))
-        L = ksp.l_bar * (1-ksp.ub)
+        L = ksp.l_bar * (1-ksp.ug)
     else:
         Kp = np.exp(B[2] + B[3] * np.log(K))
-        L = ksp.l_bar * (1-ksp.ug)
+        L = ksp.l_bar * (1-ksp.ub)
     Kp = np.clip(Kp, ksp.K_min, ksp.K_max)
     return Kp, L
 
@@ -225,7 +222,7 @@ def compute_Kp_L(K, s_i, B):
 def rhs_bellman(kp,value,k,K,s_i):
     z, eps = ksp.s_grid[s_i, 0], ksp.s_grid[s_i, 1]
     Kp, L = compute_Kp_L(K,s_i, kss.B)
-    c = (r(z,K,L)+1-ksp.delta)*k+w(z,K,L)*(eps*ksp.l_bar+(1.0-eps)*ksp.mu)-kp 
+    c = (r(z,K,L)+1-ksp.delta)*k+w(z,K,L)*(eps*ksp.l_bar+(1.0-eps)*ksp.mu)-kp
     expec = compute_expectation(kp,Kp,value,s_i)
     return ksp.u(c)+ksp.beta*expec
 
@@ -233,8 +230,8 @@ def compute_expectation(kp, Kp, value, s_i):
     expec = 0
     for s_n_i in range(4):
         # `RectBivariateSpline`を使用
-        value_itp = RectBivariateSpline(ksp.k_grid, ksp.K_grid, value[:, :, s_n_i])
-        expec += ksp.transmat.P[s_i, s_n_i] * value_itp(kp, Kp)[0, 0]  
+        value_itp = RegularGridInterpolator((ksp.k_grid, ksp.K_grid), value[:, :, s_n_i])
+        expec += ksp.transmat.P[s_i, s_n_i] * value_itp((kp, Kp))
     return expec
 
 def maximize_rhs(k_i, K_i, s_i):
@@ -246,6 +243,7 @@ def maximize_rhs(k_i, K_i, s_i):
     k_c_pos = (r(z,K,L)+1-ksp.delta)*k+w(z,K,L)*(eps*ksp.l_bar+(1.0-eps)*ksp.mu)
     def obj(kp):
         return -rhs_bellman(kp, kss.value, k, K, s_i)
+    
     res = minimize_scalar(obj, bounds=(k_min, min(k_c_pos, k_max)), method='bounded')
     
     # 最適化結果の取得
@@ -265,14 +263,11 @@ def solve_ump(tol=1e-8, max_iter=100):
                     maximize_rhs(k_i, K_i, s_i)
         iterate_policy(ksp, kss, n_iter=20)
         dif = np.max(np.abs(value_old - kss.value))
-        if dif < tol or counter_VFI == max_iter:
+        print(f"counter: {counter_VFI}, dif: {dif}")
+        if dif < tol or counter_VFI >= max_iter:
             break
 
-import numpy as np
-
 def iterate_policy(ksp, kss, n_iter=20):
-    value = np.copy(kss.value)
-    
     for _ in range(n_iter):
         # update value using policy
         value = np.array([
@@ -370,11 +365,11 @@ def simulate_aggregate_path(ksp, kss, zi_shocks, K_ts, sm):
         # Loop over individuals
         for i, k in enumerate(k_population):
             eps_i = epsi_shocks[t, i]  # idiosyncratic shock
-            s_i = epsi_zi_to_si(eps_i, z_i, ksp['z_size'])  # transform (z_i, eps_i) to s_i
+            s_i = epsi_zi_to_si(eps_i, z_i, ksp.z_size)  # transform (z_i, eps_i) to s_i
             
             # Obtain next capital holding by interpolation
-            itp_pol = RegularGridInterpolator((ksp['k_grid'], ksp['K_grid']), kss['k_opt'][:, :, s_i])
-            k_population[i] = itp_pol((k, K_ts[t]))
+            itp_pol = RegularGridInterpolator((ksp.k_grid, ksp.K_grid), kss.k_opt[:, :, s_i])
+            sm.k_population[i] = itp_pol((k, K_ts[t]))
 
     return None
 
