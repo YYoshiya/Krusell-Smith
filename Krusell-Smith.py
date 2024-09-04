@@ -15,6 +15,7 @@ import quantecon as qe
 from quantecon import MarkovChain
 from tqdm import tqdm  # For progress bar
 import itertools
+from joblib import Parallel, delayed
 class KSSolution:
     def __init__(self, k_opt, value, B, R2):
         self.k_opt = k_opt
@@ -259,30 +260,30 @@ def solve_ump(tol=1e-8, max_iter=100):
     while True:
         counter_VFI += 1
         value_old = np.copy(kss.value)
-        for k_i in range(ksp.k_size):
-            for K_i in range(ksp.K_size):
-                for s_i in range(ksp.s_size):
-                    maximize_rhs(k_i, K_i, s_i)
+        Parallel(n_jobs=-1)(delayed(maximize_rhs)(k_i, K_i, s_i)
+                            for k_i in range(ksp.k_size)
+                            for K_i in range(ksp.K_size)
+                            for s_i in range(ksp.s_size))
+        
         iterate_policy(ksp, kss, n_iter=20)
         dif = np.max(np.abs(value_old - kss.value))
+        print(f"counter_VFI: {counter_VFI}, dif: {dif}")
         if dif < tol or counter_VFI == max_iter:
             break
 
-import numpy as np
 
 def iterate_policy(ksp, kss, n_iter=20):
     value = np.copy(kss.value)
     
     for _ in range(n_iter):
-        # update value using policy
-        value = np.array([
-            rhs_bellman(kss.k_opt[k_i, K_i, s_i], kss.value,
-                        ksp.k_grid[k_i], ksp.K_grid[K_i], s_i)
-            for k_i in range(ksp.k_size)
-            for K_i in range(ksp.K_size)
-            for s_i in range(ksp.s_size)
-        ]).reshape(ksp.k_size, ksp.K_size, ksp.s_size)
+        value = Parallel(n_jobs=-1)(delayed(rhs_bellman)(
+            kss.k_opt[k_i, K_i, s_i], kss.value,
+            ksp.k_grid[k_i], ksp.K_grid[K_i], s_i
+        ) for k_i in range(ksp.k_size)
+          for K_i in range(ksp.K_size)
+          for s_i in range(ksp.s_size))
         
+        value = np.array(value).reshape(ksp.k_size, ksp.K_size, ksp.s_size)
         kss.value = np.copy(value)
     
     return None
