@@ -16,6 +16,7 @@ from quantecon import MarkovChain
 from tqdm import tqdm  # For progress bar
 import itertools
 from joblib import Parallel, delayed
+from joblib import parallel_backend
 class KSSolution:
     def __init__(self, k_opt, value, B, R2):
         self.k_opt = k_opt
@@ -260,10 +261,11 @@ def solve_ump(tol=1e-8, max_iter=100):
     while True:
         counter_VFI += 1
         value_old = np.copy(kss.value)
-        Parallel(n_jobs=-1)(delayed(maximize_rhs)(k_i, K_i, s_i)
-                            for k_i in range(ksp.k_size)
-                            for K_i in range(ksp.K_size)
-                            for s_i in range(ksp.s_size))
+        with parallel_backend("threading"):
+            Parallel(n_jobs=-1)(delayed(maximize_rhs)(k_i, K_i, s_i)
+                                for k_i in range(ksp.k_size)
+                                for K_i in range(ksp.K_size)
+                                for s_i in range(ksp.s_size))
         
         iterate_policy(ksp, kss, n_iter=20)
         dif = np.max(np.abs(value_old - kss.value))
@@ -273,8 +275,6 @@ def solve_ump(tol=1e-8, max_iter=100):
 
 
 def iterate_policy(ksp, kss, n_iter=20):
-    value = np.copy(kss.value)
-    
     for _ in range(n_iter):
         value = Parallel(n_jobs=-1)(delayed(rhs_bellman)(
             kss.k_opt[k_i, K_i, s_i], kss.value,
