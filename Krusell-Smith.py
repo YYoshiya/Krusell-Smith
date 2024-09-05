@@ -7,7 +7,6 @@ import matplotlib.pyplot as plt
 import math
 import statsmodels.api as sm
 from statsmodels.iolib.summary2 import summary_col
-from scipy.interpolate import RegularGridInterpolator
 from scipy.interpolate import RectBivariateSpline
 from scipy.interpolate import RegularGridInterpolator
 import multiprocessing as multi
@@ -346,21 +345,22 @@ def draw_eps_shock_wrapper(zi, zi_lag, epsi_shocks, epsi_shock_before, transmat)
     draw_eps_shock(epsi_shocks, epsi_shock_before, Peps)
     
 class Stochastic:
-    def __init__(self, epsi_shocks, k_population):
+    def __init__(self, epsi_shocks, k_population, zi_shocks):
         self.epsi_shocks = epsi_shocks  # Should be a 2D list or a NumPy array of integers
         self.k_population = k_population 
+        self.K_ts = np.empty(len(zi_shocks))
 
 
-def simulate_aggregate_path(ksp, kss, zi_shocks, K_ts, sm):
-    epsi_shocks = sm.epsi_shocks
-    k_population = sm.k_population
+def simulate_aggregate_path(ksp, kss, zi_shocks, ss):
+    epsi_shocks = ss.epsi_shocks
+    k_population = ss.k_population
 
     T = len(zi_shocks)  # simulated duration
     N = epsi_shocks.shape[1]  # number of agents
 
     # Loop over T periods with progress bar
     for t, z_i in enumerate(tqdm(zi_shocks, desc="Simulating aggregate path", mininterval=0.5)):
-        K_ts[t] = np.mean(k_population)  # current aggregate capital
+        ss.K_ts[t] = np.mean(k_population)  # current aggregate capital
         
         # Loop over individuals
         for i, k in enumerate(k_population):
@@ -368,15 +368,15 @@ def simulate_aggregate_path(ksp, kss, zi_shocks, K_ts, sm):
             s_i = epsi_zi_to_si(eps_i, z_i, ksp.z_size)  # transform (z_i, eps_i) to s_i
             
             # Obtain next capital holding by interpolation
-            itp_pol = RegularGridInterpolator((ksp.k_grid, ksp.K_grid), kss.k_opt[:, :, s_i])
-            sm.k_population[i] = itp_pol((k, K_ts[t]))
+            itp_pol = RegularGridInterpolator((ksp.k_grid, ksp.K_grid), kss.k_opt[:, :, s_i], bounds_error=False, fill_value=None)
+            ss.k_population[i] = itp_pol((k, ss.K_ts[t]))
 
     return None
 
 def epsi_zi_to_si(eps_i, z_i, z_size):
     return z_i + z_size * (eps_i - 1)
 
-def regress_ALM(ksp, kss, zi_shocks, K_ts, T_discard=100):
+def regress_ALM(ksp, kss, zi_shocks, T_discard=100):
     n_g = np.sum(zi_shocks[T_discard:-1] == 0)
     n_b = np.sum(zi_shocks[T_discard:-1] == 1)
     B_n = np.empty(4)
@@ -389,12 +389,12 @@ def regress_ALM(ksp, kss, zi_shocks, K_ts, T_discard=100):
     
     for t in range(T_discard, len(zi_shocks) - 1):
         if zi_shocks[t] == 0:
-            x_g[i_g] = np.log(K_ts[t])
-            y_g[i_g] = np.log(K_ts[t + 1])
+            x_g[i_g] = np.log(ss.K_ts[t])
+            y_g[i_g] = np.log(ss.K_ts[t + 1])
             i_g += 1
         else:
-            x_b[i_b] = np.log(K_ts[t])
-            y_b[i_b] = np.log(K_ts[t + 1])
+            x_b[i_b] = np.log(ss.K_ts[t])
+            y_b[i_b] = np.log(ss.K_ts[t + 1])
             i_b += 1
     
     X_g = sm.add_constant(x_g)
@@ -414,8 +414,6 @@ def regress_ALM(ksp, kss, zi_shocks, K_ts, T_discard=100):
 
 def find_ALM_coef(zi_shocks, tol_ump=1e-8, max_iter_ump=100,
                   tol_B=1e-8, max_iter_B=20, update_B=0.3, T_discard=100):
-    
-    K_ts = np.empty(len(zi_shocks))
     counter_B = 0
     
     while True:
@@ -426,10 +424,10 @@ def find_ALM_coef(zi_shocks, tol_ump=1e-8, max_iter_ump=100,
         solve_ump(max_iter=max_iter_ump, tol=tol_ump)
         
         # Compute aggregate path of capital
-        simulate_aggregate_path(ksp, kss, zi_shocks, K_ts, sm)
+        simulate_aggregate_path(ksp, kss, zi_shocks, ss)
         
         # Obtain new ALM coefficient by regression
-        B_n, dif_B = regress_ALM(ksp, kss, zi_shocks, K_ts, T_discard=T_discard)
+        B_n, dif_B = regress_ALM(ksp, kss, zi_shocks, T_discard=T_discard)
         
         # Check convergence
         if dif_B < tol_B:
@@ -445,15 +443,13 @@ def find_ALM_coef(zi_shocks, tol_ump=1e-8, max_iter_ump=100,
         
         # Update B
         kss.B = update_B * B_n + (1 - update_B) * kss.B
-    
-    return K_ts
 
 ksp = KSParameter()
 kss = KSSolution_initializer(ksp)
-zi_shocks, epsi_shocks = generate_shocks(z_shock_size=1100, population=10000)
-sm = Stochastic(epsi_shocks, k_population=np.ones(10000))
+zi_shocks, epsi_shocks = generate_shocks(z_shock_size=1100, population=10000) #1100から100に変更
+ss = Stochastic(epsi_shocks, k_population=np.ones(10000), zi_shocks=zi_shocks)
 T_discard = 100
-K_ts = find_ALM_coef(zi_shocks, 
-            tol_ump = 1e-8, max_iter_ump = 10000,
+find_ALM_coef(zi_shocks, 
+            tol_ump = 1e-8, max_iter_ump = 50,
             tol_B = 1e-8, max_iter_B = 500, update_B = 0.3,
             T_discard = T_discard)
