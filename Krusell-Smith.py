@@ -345,25 +345,26 @@ def draw_eps_shock_wrapper(zi, zi_lag, epsi_shocks, epsi_shock_before, transmat)
     draw_eps_shock(epsi_shocks, epsi_shock_before, Peps)
     
 class Stochastic:
-    def __init__(self, epsi_shocks, k_population, zi_shocks):
-        self.epsi_shocks = epsi_shocks  # Should be a 2D list or a NumPy array of integers
-        self.k_population = k_population 
-        self.K_ts = np.empty(len(zi_shocks))
+    def __init__(self, zi_shocks, epsi_shocks: np.ndarray):
+        self.epsi_shocks = epsi_shocks
+        # `fill(40, size(epsi_shocks, 2))` 相当
+        self.k_population = np.full(epsi_shocks.shape[1], 40)#これは資産の分布
+        self.K_ts = np.empty(len(zi_shocks))#これはaggregate capitalというか平均
+#初期値は全員がｋを40を持っているとする。
 
 
 def simulate_aggregate_path(ksp, kss, zi_shocks, ss):
     epsi_shocks = ss.epsi_shocks
-    k_population = ss.k_population
 
     T = len(zi_shocks)  # simulated duration
     N = epsi_shocks.shape[1]  # number of agents
 
     # Loop over T periods with progress bar
     for t, z_i in enumerate(tqdm(zi_shocks, desc="Simulating aggregate path", mininterval=0.5)):
-        ss.K_ts[t] = np.mean(k_population)  # current aggregate capital
+        ss.K_ts[t] = np.mean(ss.k_population)  # current aggregate capital
         
         # Loop over individuals
-        for i, k in enumerate(k_population):
+        for i, k in enumerate(ss.k_population):
             eps_i = epsi_shocks[t, i]  # idiosyncratic shock
             s_i = epsi_zi_to_si(eps_i, z_i, ksp.z_size)  # transform (z_i, eps_i) to s_i
             
