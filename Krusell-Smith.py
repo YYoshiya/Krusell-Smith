@@ -448,10 +448,10 @@ def find_ALM_coef(zi_shocks, tol_ump=1e-8, max_iter_ump=100,
 ksp = KSParameter()
 kss = KSSolution_initializer(ksp)
 zi_shocks, epsi_shocks = generate_shocks(z_shock_size=1100, population=10000) #1100から100に変更
-ss = Stochastic(epsi_shocks, k_population=np.ones(10000), zi_shocks=zi_shocks)
+ss = Stochastic(zi_shocks, epsi_shocks)
 T_discard = 100
 find_ALM_coef(zi_shocks, 
-            tol_ump = 1e-8, max_iter_ump = 10000,
+            tol_ump = 1e-8, max_iter_ump = 1000,
             tol_B = 1e-8, max_iter_B = 3, update_B = 0.3,
             T_discard = T_discard)
 
