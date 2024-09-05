@@ -498,3 +498,7 @@ def plot_Fig1(ksp, kss, K_ts):
     plt.title("FIG1: Tomorrow's vs. today's aggregate capital")
     plt.legend()
     plt.show()
+
+
+plot_ALM(ksp.z_grid, zi_shocks, kss.B, ss.K_ts, T_discard=T_discard)
+plot_Fig1(ksp, kss, ss.K_ts)
