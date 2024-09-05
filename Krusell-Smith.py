@@ -435,7 +435,7 @@ def find_ALM_coef(zi_shocks, tol_ump=1e-8, max_iter_ump=100,
             print(f"ALM coefficient successfully converged : dif = {dif_B}")
             print("-----------------------------------------------------")
             break
-        elif counter_B == max_iter_B:
+        elif counter_B >= max_iter_B:
             print("----------------------------------------------------------------")
             print(f"Iteration over ALM coefficient reached its maximum ({max_iter_B})")
             print("----------------------------------------------------------------")
@@ -450,6 +450,51 @@ zi_shocks, epsi_shocks = generate_shocks(z_shock_size=1100, population=10000) #1
 ss = Stochastic(epsi_shocks, k_population=np.ones(10000), zi_shocks=zi_shocks)
 T_discard = 100
 find_ALM_coef(zi_shocks, 
-            tol_ump = 1e-8, max_iter_ump = 50,
-            tol_B = 1e-8, max_iter_B = 500, update_B = 0.3,
+            tol_ump = 1e-8, max_iter_ump = 10000,
+            tol_B = 1e-8, max_iter_B = 3, update_B = 0.3,
             T_discard = T_discard)
+
+
+def compute_approxKprime(K, z, B):
+    if z == 0:
+        return np.exp(B[0] + B[1] * np.log(K))
+    elif z == 1:
+        return np.exp(B[2] + B[3] * np.log(K))
+    else:
+        raise ValueError("Unexpected value of z.")
+
+def plot_ALM(z_grid, zi_shocks, B, K_ts, T_discard=100):
+    # Preallocate K_ts_approx with the same size as K_ts
+    K_ts_approx = np.zeros_like(K_ts)
+
+    # Initialize the approximate ALM with the initial value
+    K_ts_approx[T_discard] = K_ts[T_discard]
+
+    # Compute the approximate ALM for capital
+    for t in range(T_discard, len(zi_shocks) - 1):
+        K_ts_approx[t + 1] = compute_approxKprime(K_ts_approx[t], zi_shocks[t], B)
+
+    # Plot the results
+    plt.plot(range(T_discard + 1, len(K_ts)), K_ts[T_discard + 1:], label="true", color='red', linestyle='solid')
+    plt.plot(range(T_discard + 1, len(K_ts)), K_ts_approx[T_discard + 1:], label="approximation", color='blue', linestyle='dashed')
+    plt.title("Aggregate Law of Motion for Capital")
+    plt.legend()
+    plt.show()
+
+def plot_Fig1(ksp, kss, K_ts):
+    # K_tsの最小値と最大値を取得
+    K_min, K_max = np.min(K_ts), np.max(K_ts)
+    K_lim = np.linspace(K_min, K_max, 100)
+    
+    # Kp_gとKp_bを計算
+    Kp_g = np.exp(kss.B[0] + kss.B[1] * np.log(K_lim))
+    Kp_b = np.exp(kss.B[2] + kss.B[3] * np.log(K_lim))
+    
+    # グラフを作成
+    plt.plot(K_lim, Kp_g, label="Good", linestyle='solid')
+    plt.plot(K_lim, Kp_b, label="Bad", linestyle='solid')
+    plt.plot(K_lim, K_lim, color='black', linestyle='dashed', label="45 degree", linewidth=0.5)
+    
+    plt.title("FIG1: Tomorrow's vs. today's aggregate capital")
+    plt.legend()
+    plt.show()
